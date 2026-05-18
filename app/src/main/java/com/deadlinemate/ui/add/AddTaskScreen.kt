@@ -1,0 +1,727 @@
+package com.deadlinemate.ui.add
+
+import android.Manifest
+import android.app.DatePickerDialog
+import android.app.TimePickerDialog
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.MenuDefaults
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.deadlinemate.domain.model.ImportanceLevel
+import com.deadlinemate.domain.model.RepeatRule
+import com.deadlinemate.domain.model.TaskCategory
+import com.deadlinemate.domain.model.TaskDraft
+import com.deadlinemate.ui.UiSettings
+import com.deadlinemate.ui.i18n.AppLanguage
+import com.deadlinemate.ui.i18n.LocalAppLanguage
+import com.deadlinemate.ui.i18n.text
+import com.deadlinemate.ui.profile.themeAccent
+import com.deadlinemate.ui.recognition.recognizeImageText
+import com.deadlinemate.ui.recognition.SherpaLocalSpeechRecognizer
+import com.deadlinemate.ui.theme.AppBg
+import com.deadlinemate.ui.theme.AppBlue
+import com.deadlinemate.ui.theme.AppGreen
+import com.deadlinemate.ui.theme.AppLine
+import com.deadlinemate.ui.theme.AppOrange
+import com.deadlinemate.ui.theme.AppPurple
+import com.deadlinemate.ui.theme.AppRed
+import com.deadlinemate.ui.theme.AppSubtext
+import com.deadlinemate.ui.theme.AppText
+import com.deadlinemate.util.DateTimeUtils
+import kotlinx.coroutines.launch
+import java.util.Calendar
+
+private enum class AddMode(val title: String, val icon: String, val sub: String) {
+    Manual("手动", "手", "完整填写"),
+    Voice("语音", "声", "按住说话"),
+    Screenshot("截图", "图", "相册识别")
+}
+
+private enum class EnhancedSource { Voice, Screenshot }
+
+@Composable
+fun AddTaskScreen(
+    settings: UiSettings,
+    deepSeekEnabled: Boolean,
+    pageBg: Color = AppBg,
+    onGoConfigure: () -> Unit,
+    parseSmartText: suspend (String) -> Result<TaskDraft>,
+    onSave: (String, String?, Long, ImportanceLevel, TaskCategory, RepeatRule, Int?) -> Unit
+) {
+    val context = LocalContext.current
+    val language = LocalAppLanguage.current
+    val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
+    val accent = themeAccent(settings.themeStyle)
+    var mode by remember { mutableStateOf(AddMode.Manual) }
+    var confirming by remember { mutableStateOf(false) }
+    var title by remember { mutableStateOf("") }
+    var desc by remember { mutableStateOf("") }
+    var date by remember { mutableStateOf(DateTimeUtils.formatInputDate(System.currentTimeMillis())) }
+    var time by remember { mutableStateOf("23:59") }
+    var importance by remember { mutableStateOf(ImportanceLevel.HIGH) }
+    var category by remember { mutableStateOf(TaskCategory.OTHER) }
+    var repeat by remember { mutableStateOf(RepeatRule.NONE) }
+    var reminder by remember { mutableStateOf(settings.defaultReminderMinutes) }
+    var rawText by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf<String?>(null) }
+    var parsing by remember { mutableStateOf(false) }
+    var failedSource by remember { mutableStateOf<EnhancedSource?>(null) }
+    var showConfigDialog by remember { mutableStateOf(false) }
+
+    fun applyDraft(draft: TaskDraft) {
+        title = draft.title.orEmpty()
+        desc = draft.description ?: draft.rawText.orEmpty()
+        draft.deadlineDateTime?.let {
+            date = DateTimeUtils.formatInputDate(it)
+            time = DateTimeUtils.formatTime(it)
+        }
+        importance = draft.importance ?: ImportanceLevel.MEDIUM
+        category = draft.category ?: TaskCategory.OTHER
+        repeat = draft.repeatRule ?: RepeatRule.NONE
+        confirming = true
+        mode = AddMode.Manual
+        status = language.text("请确认任务信息后再保存。", "Review the task details before saving.")
+        failedSource = null
+    }
+
+    fun parseText(text: String, source: EnhancedSource) {
+        if (text.isBlank()) {
+            status = language.text("识别内容为空，请重新识别。", "No text was recognized. Please try again.")
+            return
+        }
+        scope.launch {
+            parsing = true
+            status = language.text("正在智能解析...", "Parsing with DeepSeek...")
+            rawText = text
+            val result = parseSmartText(text)
+            parsing = false
+            result.fold(
+                onSuccess = ::applyDraft,
+                onFailure = {
+                    failedSource = source
+                    status = language.text("智能解析失败，请检查 API 配置或稍后重试。", "Smart parsing failed. Check API settings or try again later.")
+                }
+            )
+        }
+    }
+
+    lateinit var photoPicker: androidx.activity.result.ActivityResultLauncher<PickVisualMediaRequest>
+    photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            parsing = true
+            status = language.text("正在本地识别截图文字...", "Recognizing screenshot text locally...")
+            runCatching { recognizeImageText(context, uri) }
+                .onSuccess { parseText(it, EnhancedSource.Screenshot) }
+                .onFailure {
+                    parsing = false
+                    failedSource = EnhancedSource.Screenshot
+                    status = language.text("截图识别失败，请重新选择图片或改用手动填写。", "Screenshot recognition failed. Pick another image or fill manually.")
+                }
+        }
+    }
+
+    if (showConfigDialog) {
+        AlertDialog(
+            onDismissRequest = { showConfigDialog = false },
+            title = { Text(language.text("请先配置 DeepSeek API", "Configure DeepSeek API first")) },
+            text = { Text(language.text("语音添加和截图识别需要使用 DeepSeek API 提取任务名称、截止时间、重要性和重复规则。请先在「我的」页面完成配置。", "Voice add and screenshot recognition need DeepSeek API to extract task fields. Configure it from the Me page first.")) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showConfigDialog = false
+                    onGoConfigure()
+                }) { Text(language.text("去配置", "Configure"), color = accent, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfigDialog = false }) { Text(language.text("取消", "Cancel")) }
+            }
+        )
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(pageBg)
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(if (confirming) language.text("确认任务信息", "Confirm Task") else language.text("新建 DDL", "New Deadline"), color = AppText, fontSize = 30.sp, lineHeight = 32.sp, fontWeight = FontWeight.Black)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            AddMode.entries.forEach { item ->
+                val disabled = item != AddMode.Manual && !deepSeekEnabled
+                ModeCard(
+                    mode = item,
+                    selected = mode == item && !confirming,
+                    disabled = disabled,
+                    accent = accent,
+                    language = language,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    confirming = false
+                    status = null
+                    failedSource = null
+                    if (disabled) showConfigDialog = true else mode = item
+                }
+            }
+        }
+        status?.let {
+            StatusBlock(
+                text = it,
+                rawText = rawText,
+                canRecover = failedSource != null,
+                onCopy = {
+                    clipboard.setText(AnnotatedString(rawText))
+                    status = language.text("已复制识别文字。", "Recognized text copied.")
+                },
+                onManual = {
+                    confirming = false
+                    mode = AddMode.Manual
+                    desc = rawText
+                    failedSource = null
+                    status = language.text("已转为手动填写。", "Switched to manual entry.")
+                },
+                onRetry = {
+                    val source = failedSource
+                    failedSource = null
+                    status = null
+                    if (source == EnhancedSource.Screenshot) {
+                        photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    } else {
+                        mode = AddMode.Voice
+                        rawText = ""
+                    }
+                }
+            )
+        }
+        when {
+            confirming || mode == AddMode.Manual -> ManualPanel(
+                title = title,
+                onTitle = { title = it },
+                desc = desc,
+                onDesc = { desc = it },
+                date = date,
+                onDate = { date = it },
+                time = time,
+                onTime = { time = it },
+                importance = importance,
+                onImportance = { importance = it },
+                category = category,
+                onCategory = { category = it },
+                repeat = repeat,
+                onRepeat = { repeat = it },
+                reminder = reminder,
+                onReminder = { reminder = it },
+                saveText = if (confirming) language.text("保存任务", "Save Task") else language.text("创建任务", "Create Task"),
+                datePlaceholder = if (confirming && date.isBlank()) language.text("请选择截止日期", "Select deadline date") else language.text("选择日期", "Select date"),
+                timePlaceholder = if (confirming && time.isBlank()) language.text("请选择截止时间", "Select deadline time") else language.text("选择时间", "Select time"),
+                language = language,
+                accent = accent,
+                onSave = {
+                    val deadline = parseDeadline(date, time)
+                    val reminderAt = reminder?.let { deadline - it * 60_000L }
+                    if (reminderAt != null && reminderAt <= System.currentTimeMillis()) {
+                        status = language.text("提醒时间已经过去，请调整截止时间或提醒时间。", "The reminder time has already passed. Adjust the deadline or reminder.")
+                    } else {
+                        onSave(title.trim(), desc.trim().ifBlank { null }, deadline, importance, category, repeat, reminder)
+                    }
+                }
+            )
+            mode == AddMode.Voice -> VoicePanel(
+                language = settings.speechLanguage,
+                voiceText = rawText,
+                parsing = parsing,
+                onText = {
+                    rawText = it
+                    status = language.text("识别完成，请确认解析。", "Recognition finished. Confirm parsing.")
+                },
+                onConfirm = { parseText(rawText, EnhancedSource.Voice) },
+                languageUi = language,
+                accent = accent
+            )
+            mode == AddMode.Screenshot -> ScreenshotPanel(
+                parsing = parsing,
+                language = language,
+                accent = accent,
+                onPickImage = {
+                    photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun ModeCard(mode: AddMode, selected: Boolean, disabled: Boolean, accent: Color, language: AppLanguage, modifier: Modifier, onClick: () -> Unit) {
+    val border = if (selected) accent else AppLine
+    Column(
+        modifier = modifier
+            .height(68.dp)
+            .alpha(if (disabled) 0.48f else 1f)
+            .background(Color.White.copy(alpha = if (disabled) 0.46f else 0.86f), RoundedCornerShape(20.dp))
+            .border(1.dp, border, RoundedCornerShape(20.dp))
+            .clickable { onClick() }
+            .padding(10.dp),
+        verticalArrangement = Arrangement.Center
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            Box(
+                modifier = Modifier.size(28.dp).background(if (selected) accent else accent.copy(alpha = 0.12f), RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(if (disabled) language.text("锁", "Lock") else modeIcon(mode, language), color = if (selected) Color.White else accent, fontSize = 12.sp, fontWeight = FontWeight.Black)
+            }
+            Column {
+                Text(modeTitle(mode, language), color = AppText, fontSize = 14.sp, fontWeight = FontWeight.Black)
+                Text(if (disabled) language.text("需配置", "Needs setup") else modeSub(mode, language), color = AppSubtext, fontSize = 10.sp, maxLines = 1)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ManualPanel(
+    title: String,
+    onTitle: (String) -> Unit,
+    desc: String,
+    onDesc: (String) -> Unit,
+    date: String,
+    onDate: (String) -> Unit,
+    time: String,
+    onTime: (String) -> Unit,
+    importance: ImportanceLevel,
+    onImportance: (ImportanceLevel) -> Unit,
+    category: TaskCategory,
+    onCategory: (TaskCategory) -> Unit,
+    repeat: RepeatRule,
+    onRepeat: (RepeatRule) -> Unit,
+    reminder: Int?,
+    onReminder: (Int?) -> Unit,
+    saveText: String,
+    datePlaceholder: String,
+    timePlaceholder: String,
+    language: AppLanguage,
+    accent: Color,
+    onSave: () -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Field(language.text("任务名称", "Task Name")) { StyledField(title, onTitle, language.text("例如：提交课程设计报告", "Example: Submit course report")) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Field(language.text("截止日期", "Date"), Modifier.weight(1f)) { DateSelectBox(date, datePlaceholder, onDate) }
+            Field(language.text("截止时间", "Time"), Modifier.weight(1f)) { TimeSelectBox(time, timePlaceholder, onTime) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Field(language.text("重要性", "Importance"), Modifier.weight(1f)) {
+                SelectBox(labelImportance(importance, language), listOf(language.text("高", "High") to ImportanceLevel.HIGH, language.text("中", "Medium") to ImportanceLevel.MEDIUM, language.text("低", "Low") to ImportanceLevel.LOW), onImportance)
+            }
+            Field(language.text("提醒", "Reminder"), Modifier.weight(1f)) {
+                SelectBox(labelReminder(reminder, language), listOf(language.text("提前 1 天", "1 day before") to 1440, language.text("提前 3 小时", "3 hours before") to 180, language.text("提前 30 分钟", "30 minutes before") to 30, language.text("不提醒", "Off") to null), onReminder)
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Field(language.text("重复", "Repeat"), Modifier.weight(1f)) {
+                SelectBox(
+                    labelRepeat(repeat, language),
+                    listOf(language.text("不重复", "None") to RepeatRule.NONE, language.text("每天", "Daily") to RepeatRule.DAILY, language.text("每周", "Weekly") to RepeatRule.WEEKLY, language.text("每月", "Monthly") to RepeatRule.MONTHLY, language.text("自定义", "Custom") to RepeatRule.CUSTOM),
+                    onRepeat
+                )
+            }
+            Field(language.text("任务类型", "Category"), Modifier.weight(1f)) {
+                SelectBox(
+                    labelCategory(category, language),
+                    listOf(language.text("其他", "Other") to TaskCategory.OTHER, language.text("学习", "Study") to TaskCategory.STUDY, language.text("作业", "Homework") to TaskCategory.HOMEWORK, language.text("比赛", "Competition") to TaskCategory.COMPETITION, language.text("会议", "Meeting") to TaskCategory.MEETING, language.text("生活", "Life") to TaskCategory.LIFE),
+                    onCategory
+                )
+            }
+        }
+        Field(language.text("备注", "Notes")) { StyledField(desc, onDesc, language.text("补充提交方式、注意事项等", "Submission method, requirements, or notes"), minLines = 2) }
+        TextButton(
+            onClick = onSave,
+            enabled = title.isNotBlank() && date.isNotBlank(),
+            modifier = Modifier.fillMaxWidth().height(46.dp).background(accent, RoundedCornerShape(16.dp)),
+            colors = ButtonDefaults.textButtonColors(contentColor = Color.White, disabledContentColor = Color.White.copy(alpha = 0.55f))
+        ) {
+            Text(saveText, fontSize = 15.sp, fontWeight = FontWeight.Black)
+        }
+    }
+}
+
+@Composable
+private fun VoicePanel(
+    language: String,
+    voiceText: String,
+    parsing: Boolean,
+    onText: (String) -> Unit,
+    onConfirm: () -> Unit,
+    languageUi: AppLanguage,
+    accent: Color
+) {
+    val context = LocalContext.current
+    var status by remember { mutableStateOf(languageUi.text("待录音", "Ready")) }
+    var recording by remember { mutableStateOf(false) }
+    var permissionGranted by remember {
+        mutableStateOf(
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val recognizer = remember { SherpaLocalSpeechRecognizer(context.applicationContext) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        permissionGranted = granted
+        status = if (granted) languageUi.text("请按住说话", "Hold to speak") else languageUi.text("需要麦克风权限", "Microphone permission required")
+    }
+    DisposableEffect(recognizer) {
+        onDispose { recognizer.shutdown() }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Box(Modifier.fillMaxWidth().height(218.dp).background(Color.White.copy(alpha = 0.78f), RoundedCornerShape(24.dp)).border(1.dp, AppLine, RoundedCornerShape(24.dp)).padding(16.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(languageUi.text("语音识别内容", "Voice Text"), color = AppText, fontSize = 17.sp, fontWeight = FontWeight.Black)
+                Text(if (voiceText.isBlank()) languageUi.text("按住下方按钮说话，松开后本地识别为文字。", "Hold the button, speak, then release to recognize text locally.") else voiceText, color = AppSubtext, fontSize = 14.sp, lineHeight = 22.sp)
+            }
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                  .height(56.dp)
+                  .background(accent, RoundedCornerShape(20.dp))
+                  .pointerInput(permissionGranted, language) {
+                      detectTapGestures(
+                          onPress = {
+                              if (!permissionGranted) {
+                                  permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                  return@detectTapGestures
+                              }
+                              status = languageUi.text("正在加载本地 Paraformer 模型...", "Loading local Paraformer model...")
+                              val prepared = recognizer.prepare()
+                              if (prepared.isFailure) {
+                                  status = prepared.exceptionOrNull()?.message ?: languageUi.text("本地模型加载失败，请切换手动输入。", "Failed to load local model. Use manual input.")
+                                  return@detectTapGestures
+                              }
+                              status = languageUi.text("正在本地录音，请说话", "Recording locally. Speak now.")
+                              recording = true
+                              recognizer.start(
+                                  onPartial = { status = it },
+                                  onFinal = { text ->
+                                      recording = false
+                                      if (text.isNotBlank()) {
+                                          onText(text)
+                                          status = languageUi.text("识别完成，请确认解析", "Recognition finished. Confirm parsing.")
+                                      } else {
+                                          status = languageUi.text("未识别到内容", "No speech recognized")
+                                      }
+                                  },
+                                  onError = {
+                                      recording = false
+                                      status = it
+                                  }
+                              )
+                              tryAwaitRelease()
+                              status = languageUi.text("正在本地识别...", "Recognizing locally...")
+                              recognizer.stop()
+                          }
+                      )
+                  },
+            contentAlignment = Alignment.Center
+        ) {
+            Text(if (recording) languageUi.text("松开识别", "Release to Recognize") else languageUi.text("按住说话", "Hold to Speak"), color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Black)
+        }
+        Text(status, color = AppSubtext, fontSize = 12.sp)
+        TextButton(
+            onClick = onConfirm,
+            enabled = voiceText.isNotBlank() && !parsing,
+            modifier = Modifier.fillMaxWidth().height(50.dp).background(accent, RoundedCornerShape(18.dp)),
+            colors = ButtonDefaults.textButtonColors(contentColor = Color.White, disabledContentColor = Color.White.copy(alpha = 0.55f))
+        ) {
+            Text(if (parsing) languageUi.text("解析中...", "Parsing...") else languageUi.text("确认并智能解析", "Confirm and Parse"), fontSize = 15.sp, fontWeight = FontWeight.Black)
+        }
+    }
+}
+
+@Composable
+private fun ScreenshotPanel(parsing: Boolean, language: AppLanguage, accent: Color, onPickImage: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, AppLine, RoundedCornerShape(26.dp))
+            .background(Color.White.copy(alpha = 0.72f), RoundedCornerShape(26.dp))
+            .padding(horizontal = 18.dp, vertical = 28.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(language.text("选择一张截图", "Choose a Screenshot"), color = AppText, fontSize = 18.sp, fontWeight = FontWeight.Black)
+        Text(
+            language.text("从相册选择通知、课程平台或比赛要求截图，识别后自动整理为任务草稿。", "Pick a notification, course platform, or competition screenshot. Text is recognized locally and organized into a task draft."),
+            color = AppSubtext,
+            fontSize = 12.sp,
+            lineHeight = 19.sp
+        )
+        Box(
+            Modifier
+                .background(accent, RoundedCornerShape(18.dp))
+                .clickable(enabled = !parsing) { onPickImage() }
+                .padding(horizontal = 20.dp, vertical = 13.dp)
+        ) {
+            Text(if (parsing) language.text("处理中...", "Processing...") else language.text("打开相册", "Open Gallery"), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Black)
+        }
+    }
+}
+
+@Composable
+private fun StatusBlock(
+    text: String,
+    rawText: String,
+    canRecover: Boolean,
+    onCopy: () -> Unit,
+    onManual: () -> Unit,
+    onRetry: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth().background(if (canRecover) AppRed.copy(alpha = 0.08f) else AppBlue.copy(alpha = 0.08f), RoundedCornerShape(18.dp)).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(text, color = if (canRecover) AppRed else AppBlue, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        if (canRecover) {
+            val language = LocalAppLanguage.current
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                RecoveryButton(language.text("复制文字", "Copy"), Modifier.weight(1f), enabled = rawText.isNotBlank(), onCopy)
+                RecoveryButton(language.text("转手动", "Manual"), Modifier.weight(1f), enabled = true, onManual)
+                RecoveryButton(language.text("重新识别", "Retry"), Modifier.weight(1f), enabled = true, onRetry)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecoveryButton(text: String, modifier: Modifier, enabled: Boolean, onClick: () -> Unit) {
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(40.dp).background(Color.White.copy(alpha = 0.82f), RoundedCornerShape(14.dp)).border(1.dp, AppLine, RoundedCornerShape(14.dp)),
+        colors = ButtonDefaults.textButtonColors(contentColor = AppText, disabledContentColor = AppSubtext)
+    ) { Text(text, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+}
+
+@Composable
+private fun Field(label: String, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Column(modifier = modifier) {
+        Text(label, color = AppSubtext, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(start = 2.dp, bottom = 4.dp))
+        content()
+    }
+}
+
+@Composable
+private fun StyledField(value: String, onValue: (String) -> Unit, placeholder: String, minLines: Int = 1) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValue,
+        placeholder = { Text(placeholder, color = AppSubtext) },
+        modifier = Modifier.fillMaxWidth().height(if (minLines > 1) 76.dp else 50.dp),
+        minLines = minLines,
+        singleLine = minLines == 1,
+        shape = RoundedCornerShape(15.dp),
+        colors = fieldColors()
+    )
+}
+
+@Composable
+private fun ChoiceBox(text: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(50.dp)
+            .background(Color.White.copy(alpha = 0.78f), RoundedCornerShape(15.dp))
+            .border(1.dp, AppLine, RoundedCornerShape(15.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Text(text, color = AppText, fontSize = 13.sp, maxLines = 1)
+    }
+}
+
+@Composable
+private fun DateSelectBox(value: String, placeholder: String, onSelected: (String) -> Unit) {
+    val context = LocalContext.current
+    ChoiceBox(if (value.isBlank()) placeholder else value) {
+        val cal = pickerDateCalendar(value)
+        DatePickerDialog(
+            context,
+            { _, year, month, day ->
+                onSelected("%04d-%02d-%02d".format(year, month + 1, day))
+            },
+            cal.get(Calendar.YEAR),
+            cal.get(Calendar.MONTH),
+            cal.get(Calendar.DAY_OF_MONTH)
+        ).show()
+    }
+}
+
+@Composable
+private fun TimeSelectBox(value: String, placeholder: String, onSelected: (String) -> Unit) {
+    val context = LocalContext.current
+    ChoiceBox(if (value.isBlank()) placeholder else value) {
+        val (hour, minute) = pickerTime(value)
+        TimePickerDialog(
+            context,
+            { _, selectedHour, selectedMinute ->
+                onSelected("%02d:%02d".format(selectedHour, selectedMinute))
+            },
+            hour,
+            minute,
+            true
+        ).show()
+    }
+}
+
+@Composable
+private fun <T> SelectBox(value: String, options: List<Pair<String, T>>, onSelected: (T) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        ChoiceBox(value) { expanded = true }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            containerColor = Color.White
+        ) {
+            options.forEach { (label, optionValue) ->
+                DropdownMenuItem(
+                    text = { Text(label, color = AppText, fontWeight = FontWeight.Bold) },
+                    onClick = {
+                        expanded = false
+                        onSelected(optionValue)
+                    },
+                    colors = MenuDefaults.itemColors(
+                        textColor = AppText
+                    )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun fieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedContainerColor = Color.White.copy(alpha = 0.78f),
+    unfocusedContainerColor = Color.White.copy(alpha = 0.78f),
+    focusedBorderColor = AppLine,
+    unfocusedBorderColor = AppLine,
+    focusedTextColor = AppText,
+    unfocusedTextColor = AppText
+)
+
+private fun parseDeadline(date: String, time: String): Long {
+    val parts = date.split("-").mapNotNull { it.toIntOrNull() }
+    val clock = time.split(":").mapNotNull { it.toIntOrNull() }
+    return DateTimeUtils.calendar().apply {
+        if (parts.size == 3) set(parts[0], parts[1] - 1, parts[2])
+        set(Calendar.HOUR_OF_DAY, clock.getOrNull(0) ?: 23)
+        set(Calendar.MINUTE, clock.getOrNull(1) ?: 59)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+    }.timeInMillis
+}
+
+private fun pickerDateCalendar(value: String): Calendar {
+    val parts = value.split("-").mapNotNull { it.toIntOrNull() }
+    return DateTimeUtils.calendar().apply {
+        if (parts.size == 3) set(parts[0], parts[1] - 1, parts[2])
+    }
+}
+
+private fun pickerTime(value: String): Pair<Int, Int> {
+    val parts = value.split(":").mapNotNull { it.toIntOrNull() }
+    return (parts.getOrNull(0) ?: 23) to (parts.getOrNull(1) ?: 59)
+}
+
+private fun modeTitle(mode: AddMode, language: AppLanguage): String = when (mode) {
+    AddMode.Manual -> language.text("手动", "Manual")
+    AddMode.Voice -> language.text("语音", "Voice")
+    AddMode.Screenshot -> language.text("截图", "Screenshot")
+}
+
+private fun modeIcon(mode: AddMode, language: AppLanguage): String = when (mode) {
+    AddMode.Manual -> language.text("手", "M")
+    AddMode.Voice -> language.text("声", "V")
+    AddMode.Screenshot -> language.text("图", "S")
+}
+
+private fun modeSub(mode: AddMode, language: AppLanguage): String = when (mode) {
+    AddMode.Manual -> language.text("完整填写", "Fill details")
+    AddMode.Voice -> language.text("按住说话", "Hold to speak")
+    AddMode.Screenshot -> language.text("相册识别", "Pick image")
+}
+
+private fun labelImportance(value: ImportanceLevel, language: AppLanguage): String = when (value) {
+    ImportanceLevel.HIGH -> language.text("高", "High")
+    ImportanceLevel.MEDIUM -> language.text("中", "Medium")
+    ImportanceLevel.LOW -> language.text("低", "Low")
+}
+
+private fun labelCategory(value: TaskCategory, language: AppLanguage): String = when (value) {
+    TaskCategory.STUDY -> language.text("学习", "Study")
+    TaskCategory.HOMEWORK -> language.text("作业", "Homework")
+    TaskCategory.COMPETITION -> language.text("比赛", "Competition")
+    TaskCategory.MEETING -> language.text("会议", "Meeting")
+    TaskCategory.LIFE -> language.text("生活", "Life")
+    TaskCategory.OTHER -> language.text("其他", "Other")
+}
+
+private fun labelRepeat(value: RepeatRule, language: AppLanguage): String = when (value) {
+    RepeatRule.NONE -> language.text("不重复", "None")
+    RepeatRule.DAILY -> language.text("每天", "Daily")
+    RepeatRule.WEEKLY -> language.text("每周", "Weekly")
+    RepeatRule.MONTHLY -> language.text("每月", "Monthly")
+    RepeatRule.CUSTOM -> language.text("自定义", "Custom")
+}
+
+private fun labelReminder(value: Int?, language: AppLanguage): String = when (value) {
+    1440 -> language.text("提前 1 天", "1 day before")
+    180 -> language.text("提前 3 小时", "3 hours before")
+    30 -> language.text("提前 30 分钟", "30 minutes before")
+    null -> language.text("不提醒", "Off")
+    else -> language.text("提前 ${value} 分钟", "$value minutes before")
+}

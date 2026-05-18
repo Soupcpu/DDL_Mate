@@ -1,0 +1,17 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name=".debug.DebugTestActivity"
+            android:exported="true"
+            android:label="Deadline Test"
+            android:theme="@style/Theme.DeadlineMate" />
+
+        <receiver
+            android:name=".reminder.ReminderDebugReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.deadlinemate.DEBUG_REMINDER" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

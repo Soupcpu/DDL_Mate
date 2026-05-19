@@ -8,6 +8,7 @@ import com.deadlinemate.deepseek.DeepSeekApiClient
 import com.deadlinemate.deepseek.DeepSeekTaskTextParser
 import com.deadlinemate.push.MiPushInitializer
 import com.deadlinemate.reminder.ReminderScheduler
+import com.deadlinemate.ui.recognition.SherpaLocalSpeechRecognizer
 import com.deadlinemate.update.AppUpdateInstaller
 import com.deadlinemate.update.GithubUpdateChecker
 import okhttp3.OkHttpClient
@@ -26,5 +27,6 @@ class DeadlineMateApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         MiPushInitializer.init(this)
+        SherpaLocalSpeechRecognizer.preload(this)
     }
 }

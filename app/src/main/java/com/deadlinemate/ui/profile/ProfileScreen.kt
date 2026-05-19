@@ -11,7 +11,15 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -30,6 +38,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -41,6 +51,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,6 +69,9 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
@@ -89,6 +103,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 @Composable
 fun ProfileScreen(
@@ -443,6 +458,13 @@ private fun StreakCard(stats: StreakStats, language: AppLanguage, modifier: Modi
 
 @Composable
 private fun HistoryList(doneTasks: List<Task>, language: AppLanguage) {
+    val consumeNestedScroll = remember {
+        object : NestedScrollConnection {
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                return available
+            }
+        }
+    }
     GlassPanel(modifier = Modifier.fillMaxWidth(), radius = 24.dp) {
         Column(modifier = Modifier.heightIn(max = if (doneTasks.size > 2) 152.dp else 220.dp)) {
             if (doneTasks.isEmpty()) {
@@ -457,7 +479,11 @@ private fun HistoryList(doneTasks: List<Task>, language: AppLanguage) {
                     )
                 }
             } else {
-                LazyColumn(modifier = Modifier.height(152.dp)) {
+                LazyColumn(
+                    modifier = Modifier
+                        .height(152.dp)
+                        .nestedScroll(consumeNestedScroll)
+                ) {
                     items(doneTasks, key = { it.id }) { task ->
                         HistoryItem(
                             task.title,
@@ -721,6 +747,7 @@ private fun openUrl(context: Context, url: String) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SettingGroup(
     title: String,
@@ -729,6 +756,15 @@ private fun SettingGroup(
     onClick: () -> Unit,
     content: @Composable () -> Unit
 ) {
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            repeat(7) {
+                delay(32)
+                bringIntoViewRequester.bringIntoView()
+            }
+        }
+    }
     Column {
         Row(
             Modifier.fillMaxWidth().clickable { onClick() }.padding(16.dp),
@@ -741,7 +777,15 @@ private fun SettingGroup(
             }
             Text(if (expanded) "收起" else "展开 ›", color = AppSubtext, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         }
-        if (expanded) {
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically(
+                animationSpec = tween(240, easing = FastOutSlowInEasing)
+            ) + fadeIn(animationSpec = tween(120)),
+            exit = shrinkVertically(
+                animationSpec = tween(180, easing = FastOutSlowInEasing)
+            ) + fadeOut(animationSpec = tween(100))
+        ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -756,6 +800,12 @@ private fun SettingGroup(
                 )
                 Column(Modifier.weight(1f)) {
                     content()
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .bringIntoViewRequester(bringIntoViewRequester)
+                    )
                 }
             }
         }

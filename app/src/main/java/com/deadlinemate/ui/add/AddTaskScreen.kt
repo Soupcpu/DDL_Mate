@@ -36,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,12 +45,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.deadlinemate.domain.model.ImportanceLevel
@@ -518,9 +522,20 @@ private fun VoicePanel(
         )
     }
     val recognizer = remember { SherpaLocalSpeechRecognizer(context.applicationContext) }
+    var modelReady by remember { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         permissionGranted = granted
         status = if (granted) languageUi.text("请按住说话", "Hold to speak") else languageUi.text("需要麦克风权限", "Microphone permission required")
+    }
+    LaunchedEffect(recognizer) {
+        recognizer.prepare()
+            .onSuccess {
+                modelReady = true
+                status = languageUi.text("按住即可说话", "Hold to speak")
+            }
+            .onFailure {
+                status = it.message ?: languageUi.text("本地语音模型不可用，请切换手动输入。", "Local speech model is unavailable. Use manual input.")
+            }
     }
     DisposableEffect(recognizer) {
         onDispose { recognizer.shutdown() }
@@ -544,12 +559,15 @@ private fun VoicePanel(
                                   permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                   return@detectTapGestures
                               }
-                              status = languageUi.text("正在加载本地 Paraformer 模型...", "Loading local Paraformer model...")
+                              if (!modelReady) {
+                                  status = languageUi.text("正在完成首次加载，请稍等片刻...", "Finishing first-time load...")
+                              }
                               val prepared = recognizer.prepare()
                               if (prepared.isFailure) {
                                   status = prepared.exceptionOrNull()?.message ?: languageUi.text("本地模型加载失败，请切换手动输入。", "Failed to load local model. Use manual input.")
                                   return@detectTapGestures
                               }
+                              modelReady = true
                               status = languageUi.text("正在本地录音，请说话", "Recording locally. Speak now.")
                               recording = true
                               recognizer.start(
@@ -595,27 +613,126 @@ private fun ScreenshotPanel(parsing: Boolean, language: AppLanguage, accent: Col
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, AppLine, RoundedCornerShape(26.dp))
-            .background(Color.White.copy(alpha = 0.72f), RoundedCornerShape(26.dp))
-            .padding(horizontal = 18.dp, vertical = 28.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .clip(RoundedCornerShape(28.dp))
+            .background(
+                Brush.linearGradient(
+                    listOf(
+                        Color.White.copy(alpha = 0.92f),
+                        accent.copy(alpha = 0.08f),
+                        Color.White.copy(alpha = 0.82f)
+                    )
+                )
+            )
+            .border(1.dp, Color.White.copy(alpha = 0.78f), RoundedCornerShape(28.dp))
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text(language.text("选择一张截图", "Choose a Screenshot"), color = AppText, fontSize = 18.sp, fontWeight = FontWeight.Black)
-        Text(
-            language.text("从相册选择通知、课程平台或比赛要求截图，识别后自动整理为任务草稿。", "Pick a notification, course platform, or competition screenshot. Text is recognized locally and organized into a task draft."),
-            color = AppSubtext,
-            fontSize = 12.sp,
-            lineHeight = 19.sp
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier
+                    .size(48.dp)
+                    .background(accent.copy(alpha = 0.13f), RoundedCornerShape(17.dp))
+                    .border(1.dp, accent.copy(alpha = 0.22f), RoundedCornerShape(17.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("OCR", color = accent, fontSize = 14.sp, fontWeight = FontWeight.Black)
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(language.text("批量识别截图里的 DDL", "Batch Extract Deadlines"), color = AppText, fontSize = 19.sp, lineHeight = 22.sp, fontWeight = FontWeight.Black)
+                Text(
+                    language.text("可一次选择多张通知、课程平台或比赛要求截图。图片只在本地 OCR，DeepSeek 只接收识别出的文字并生成待确认草稿。", "Select multiple screenshots from notifications, course platforms, or requirements. Images stay local; only recognized text is sent to DeepSeek for drafts."),
+                    color = AppSubtext,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp
+                )
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            ScreenshotFeatureChip(language.text("多图", "Multi"), accent, Modifier.weight(1f))
+            ScreenshotFeatureChip(language.text("本地 OCR", "Local OCR"), accent, Modifier.weight(1f))
+            ScreenshotFeatureChip(language.text("逐个确认", "Review"), accent, Modifier.weight(1f))
+        }
+        ScreenshotScanPreview(accent = accent)
         Box(
             Modifier
+                .fillMaxWidth()
+                .height(52.dp)
                 .background(accent, RoundedCornerShape(18.dp))
                 .clickable(enabled = !parsing) { onPickImage() }
-                .padding(horizontal = 20.dp, vertical = 13.dp)
+                .padding(horizontal = 20.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Text(if (parsing) language.text("处理中...", "Processing...") else language.text("打开相册", "Open Gallery"), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Black)
+            Text(if (parsing) language.text("正在提取截图文字...", "Extracting screenshot text...") else language.text("选择截图并开始识别", "Choose Screenshots"), color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Black)
         }
+    }
+}
+
+@Composable
+private fun ScreenshotScanPreview(accent: Color) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(146.dp)
+            .background(Color.White.copy(alpha = 0.58f), RoundedCornerShape(22.dp))
+            .border(1.dp, AppLine.copy(alpha = 0.72f), RoundedCornerShape(22.dp))
+            .padding(14.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(9.dp), modifier = Modifier.fillMaxWidth()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(Modifier.weight(1.1f).height(16.dp).background(AppText.copy(alpha = 0.12f), RoundedCornerShape(8.dp)))
+                Box(Modifier.weight(0.55f).height(16.dp).background(accent.copy(alpha = 0.16f), RoundedCornerShape(8.dp)))
+            }
+            Box(Modifier.fillMaxWidth().height(12.dp).background(AppSubtext.copy(alpha = 0.10f), RoundedCornerShape(7.dp)))
+            Box(Modifier.fillMaxWidth(0.72f).height(12.dp).background(AppSubtext.copy(alpha = 0.10f), RoundedCornerShape(7.dp)))
+            Row(horizontalArrangement = Arrangement.spacedBy(9.dp), modifier = Modifier.padding(top = 4.dp)) {
+                repeat(3) { index ->
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .height(42.dp)
+                            .background(
+                                if (index == 1) accent.copy(alpha = 0.11f) else Color.White.copy(alpha = 0.64f),
+                                RoundedCornerShape(15.dp)
+                            )
+                            .border(1.dp, if (index == 1) accent.copy(alpha = 0.18f) else AppLine.copy(alpha = 0.55f), RoundedCornerShape(15.dp))
+                    )
+                }
+            }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(3.dp)
+                .align(Alignment.Center)
+                .background(
+                    Brush.horizontalGradient(
+                        listOf(Color.Transparent, accent.copy(alpha = 0.62f), Color.Transparent)
+                    ),
+                    RoundedCornerShape(999.dp)
+                )
+        )
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .align(Alignment.TopEnd)
+                .background(accent.copy(alpha = 0.13f), RoundedCornerShape(10.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("AI", color = accent, fontSize = 11.sp, fontWeight = FontWeight.Black)
+        }
+    }
+}
+
+@Composable
+private fun ScreenshotFeatureChip(text: String, accent: Color, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .height(34.dp)
+            .background(Color.White.copy(alpha = 0.72f), RoundedCornerShape(14.dp))
+            .border(1.dp, accent.copy(alpha = 0.12f), RoundedCornerShape(14.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text, color = accent, fontSize = 11.sp, fontWeight = FontWeight.Black, maxLines = 1)
     }
 }
 
@@ -738,10 +855,11 @@ private fun StyledField(value: String, onValue: (String) -> Unit, placeholder: S
     OutlinedTextField(
         value = value,
         onValueChange = onValue,
-        placeholder = { Text(placeholder, color = AppSubtext) },
-        modifier = Modifier.fillMaxWidth().height(if (minLines > 1) 76.dp else 50.dp),
+        placeholder = { Text(placeholder, color = AppSubtext, fontSize = 15.sp, lineHeight = 20.sp) },
+        modifier = Modifier.fillMaxWidth().height(if (minLines > 1) 82.dp else 58.dp),
         minLines = minLines,
         singleLine = minLines == 1,
+        textStyle = TextStyle(fontSize = 15.sp, lineHeight = 20.sp),
         shape = RoundedCornerShape(15.dp),
         colors = fieldColors()
     )

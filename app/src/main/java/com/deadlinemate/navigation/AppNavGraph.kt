@@ -7,6 +7,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -43,6 +48,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -336,6 +342,18 @@ private fun CompletionCelebrationOverlay(
     var visible by remember(feedback.id) { mutableStateOf(false) }
     val accent = themeAccent(themeStyle)
     val accentSoft = themeAccentSoft(themeStyle)
+    val burst by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(520, easing = FastOutSlowInEasing),
+        label = "completion-burst"
+    )
+    val infiniteTransition = rememberInfiniteTransition(label = "completion-pulse")
+    val pulse by infiniteTransition.animateFloat(
+        initialValue = 0.96f,
+        targetValue = 1.04f,
+        animationSpec = infiniteRepeatable(tween(720, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "completion-pulse-scale"
+    )
 
     LaunchedEffect(feedback.id) {
         visible = true
@@ -349,8 +367,8 @@ private fun CompletionCelebrationOverlay(
         visible = visible,
         modifier = modifier.fillMaxSize(),
         enter = fadeIn(animationSpec = tween(260)) + scaleIn(
-            initialScale = 0.98f,
-            animationSpec = tween(420, easing = FastOutSlowInEasing)
+            initialScale = 0.92f,
+            animationSpec = tween(360, easing = FastOutSlowInEasing)
         ),
         exit = fadeOut(animationSpec = tween(320)) + scaleOut(
             targetScale = 1.02f,
@@ -373,10 +391,13 @@ private fun CompletionCelebrationOverlay(
                 .padding(horizontal = 28.dp),
             contentAlignment = Alignment.Center
         ) {
+            CelebrationBurstRing(accent, burst, 184)
+            CelebrationBurstRing(AppGreen, (burst - 0.12f).coerceIn(0f, 1f), 236)
             CelebrationBubble(accent.copy(alpha = 0.10f), 130, Alignment.TopEnd, 34, 118)
             CelebrationBubble(AppGreen.copy(alpha = 0.13f), 82, Alignment.TopStart, 30, 165)
             CelebrationBubble(Color(0xFFFFCC66).copy(alpha = 0.18f), 62, Alignment.BottomEnd, -44, -158)
             CelebrationBubble(accent.copy(alpha = 0.12f), 96, Alignment.BottomStart, 36, -140)
+            CelebrationBurstSparks(accent, burst)
 
             Row(
                 horizontalArrangement = Arrangement.spacedBy(18.dp),
@@ -395,6 +416,10 @@ private fun CompletionCelebrationOverlay(
                 Box(
                     modifier = Modifier
                         .size(128.dp)
+                        .graphicsLayer {
+                            scaleX = (0.78f + burst * 0.22f) * pulse
+                            scaleY = (0.78f + burst * 0.22f) * pulse
+                        }
                         .shadow(24.dp, RoundedCornerShape(999.dp), ambientColor = AppGreen.copy(alpha = 0.18f), spotColor = AppGreen.copy(alpha = 0.22f))
                         .clip(RoundedCornerShape(999.dp))
                         .background(Brush.linearGradient(listOf(AppGreen.copy(alpha = 0.92f), Color(0xFF6FE08D))))
@@ -433,6 +458,52 @@ private fun CelebrationBubble(color: Color, size: Int, alignment: Alignment, x: 
                 .size(size.dp)
                 .background(color, RoundedCornerShape(999.dp))
         )
+    }
+}
+
+@Composable
+private fun CelebrationBurstRing(color: Color, progress: Float, size: Int) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier
+                .size(size.dp)
+                .graphicsLayer {
+                    scaleX = 0.32f + progress * 1.24f
+                    scaleY = 0.32f + progress * 1.24f
+                    alpha = (1f - progress).coerceIn(0f, 1f) * 0.38f
+                }
+                .border(3.dp, color, RoundedCornerShape(999.dp))
+        )
+    }
+}
+
+@Composable
+private fun CelebrationBurstSparks(color: Color, progress: Float) {
+    val sparks = listOf(
+        Triple(0, -118, Color(0xFFFFCC66)),
+        Triple(94, -72, AppGreen),
+        Triple(116, 28, color),
+        Triple(54, 108, Color(0xFFFF8A65)),
+        Triple(-58, 105, color),
+        Triple(-120, 18, AppGreen),
+        Triple(-86, -82, Color(0xFFFFCC66))
+    )
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        sparks.forEachIndexed { index, spark ->
+            val distance = progress * progress
+            Box(
+                Modifier
+                    .offset((spark.first * distance).dp, (spark.second * distance).dp)
+                    .size((7 + index % 3 * 3).dp)
+                    .graphicsLayer {
+                        alpha = if (progress < 0.08f) 0f else (1f - progress * 0.35f).coerceIn(0f, 1f)
+                        rotationZ = progress * 180f * if (index % 2 == 0) 1f else -1f
+                        scaleX = 0.5f + progress * 0.9f
+                        scaleY = 0.5f + progress * 0.9f
+                    }
+                    .background(spark.third.copy(alpha = 0.86f), RoundedCornerShape(999.dp))
+            )
+        }
     }
 }
 

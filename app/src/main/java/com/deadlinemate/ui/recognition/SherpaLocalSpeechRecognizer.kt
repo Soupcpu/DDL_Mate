@@ -36,19 +36,65 @@ class SherpaLocalSpeechRecognizer(
     private var finalCallback: ((String) -> Unit)? = null
     private var errorCallback: ((String) -> Unit)? = null
 
-    fun hasBundledModel(): Boolean {
-        return runCatching {
-            listOf(
-                "$SHERPA_ASSET_MODEL_DIR/model.int8.onnx",
-                "$SHERPA_ASSET_MODEL_DIR/tokens.txt"
-            ).all { asset ->
-                context.assets.open(asset).use { true }
+    companion object {
+        private val preloadLock = Any()
+        private val preloadStarted = AtomicBoolean(false)
+        @Volatile private var sharedRecognizer: OfflineRecognizer? = null
+
+        fun preload(context: Context) {
+            if (!preloadStarted.compareAndSet(false, true)) return
+            CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                runCatching { ensureRecognizer(context.applicationContext) }
             }
-        }.getOrDefault(false)
+        }
+
+        private fun ensureRecognizer(context: Context): OfflineRecognizer {
+            sharedRecognizer?.let { return it }
+            synchronized(preloadLock) {
+                sharedRecognizer?.let { return it }
+                if (!hasBundledModel(context)) {
+                    error("Missing bundled Sherpa-ONNX model.")
+                }
+                return OfflineRecognizer(
+                    assetManager = context.assets,
+                    config = OfflineRecognizerConfig(
+                        featConfig = FeatureConfig(
+                            sampleRate = SHERPA_SAMPLE_RATE,
+                            featureDim = 80
+                        ),
+                        modelConfig = OfflineModelConfig(
+                            paraformer = OfflineParaformerModelConfig(
+                                model = "$SHERPA_ASSET_MODEL_DIR/model.int8.onnx"
+                            ),
+                            tokens = "$SHERPA_ASSET_MODEL_DIR/tokens.txt",
+                            numThreads = 2,
+                            modelType = "paraformer"
+                        )
+                    )
+                ).also { sharedRecognizer = it }
+            }
+        }
+
+        private fun hasBundledModel(context: Context): Boolean {
+            return runCatching {
+                listOf(
+                    "$SHERPA_ASSET_MODEL_DIR/model.int8.onnx",
+                    "$SHERPA_ASSET_MODEL_DIR/tokens.txt"
+                ).all { asset ->
+                    context.assets.open(asset).use { true }
+                }
+            }.getOrDefault(false)
+        }
+    }
+
+    fun hasBundledModel(): Boolean {
+        return hasBundledModel(context)
     }
 
     suspend fun prepare(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
+            recognizer = ensureRecognizer(context.applicationContext)
+            return@runCatching
             if (!hasBundledModel()) {
                 error("缺少 Sherpa-ONNX 中文 Paraformer 模型。")
             }
@@ -189,7 +235,6 @@ class SherpaLocalSpeechRecognizer(
 
     fun shutdown() {
         stop(decode = false)
-        recognizer?.release()
         recognizer = null
         scope.cancel()
     }

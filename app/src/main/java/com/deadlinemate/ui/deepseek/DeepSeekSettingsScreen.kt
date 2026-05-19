@@ -1,5 +1,9 @@
 package com.deadlinemate.ui.deepseek
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -29,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -59,6 +64,7 @@ fun DeepSeekSettingsScreen(
     onTest: suspend (DeepSeekConfig) -> Result<Unit>
 ) {
     val language = LocalAppLanguage.current
+    val context = LocalContext.current
     var apiKey by remember { mutableStateOf("") }
     var baseUrl by remember { mutableStateOf(DeepSeekConfig.DEFAULT_BASE_URL) }
     var model by remember { mutableStateOf(DeepSeekConfig.DEFAULT_MODEL) }
@@ -190,6 +196,12 @@ fun DeepSeekSettingsScreen(
                     }
                     DangerButton(language.text("清除配置", "Clear Config"), Modifier.weight(1f)) { showClearConfirm = true }
                 }
+                SecondaryButton(
+                    text = language.text("获取 DeepSeek API", "Get DeepSeek API"),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    openDeepSeekPlatform(context)
+                }
             }
         }
 
@@ -205,6 +217,15 @@ fun DeepSeekSettingsScreen(
                 modifier = Modifier.padding(16.dp)
             )
         }
+    }
+}
+
+private fun openDeepSeekPlatform(context: Context) {
+    runCatching {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse("https://platform.deepseek.com/api_keys"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 }
 

@@ -105,6 +105,7 @@ fun ProfileScreen(
     deepSeekStatus: String,
     onOpenDeepSeekSettings: () -> Unit,
     onCheckUpdates: suspend () -> Result<AppUpdateInfo>,
+    onDownloadUpdate: suspend (String, String?) -> Result<Unit>,
     onOpenTestCenter: () -> Unit,
     onEnableDeveloperMode: () -> Unit
 ) {
@@ -155,6 +156,7 @@ fun ProfileScreen(
                 deepSeekStatus = deepSeekStatus,
                 onOpenDeepSeekSettings = onOpenDeepSeekSettings,
                 onCheckUpdates = onCheckUpdates,
+                onDownloadUpdate = onDownloadUpdate,
                 versionName = BuildConfig.VERSION_NAME,
                 onOpenTestCenter = onOpenTestCenter,
                 onDeveloperUnlocked = {
@@ -494,6 +496,7 @@ private fun SettingList(
     deepSeekStatus: String,
     onOpenDeepSeekSettings: () -> Unit,
     onCheckUpdates: suspend () -> Result<AppUpdateInfo>,
+    onDownloadUpdate: suspend (String, String?) -> Result<Unit>,
     versionName: String,
     onOpenTestCenter: () -> Unit,
     onDeveloperUnlocked: () -> Unit
@@ -503,6 +506,7 @@ private fun SettingList(
     val scope = rememberCoroutineScope()
     var expandedGroup by remember { mutableStateOf<String?>(null) }
     var checkingUpdate by remember { mutableStateOf(false) }
+    var downloadingUpdate by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
     var updateError by remember { mutableStateOf<String?>(null) }
 
@@ -595,14 +599,29 @@ private fun SettingList(
         UpdateResultDialog(
             info = info,
             language = language,
+            downloading = downloadingUpdate,
             onDismiss = { updateInfo = null },
             onOpenRelease = {
                 updateInfo = null
                 openUrl(context, info.releaseUrl)
             },
             onOpenApk = {
-                updateInfo = null
-                info.apkDownloadUrl?.let { openUrl(context, it) }
+                val url = info.apkDownloadUrl ?: return@UpdateResultDialog
+                if (!downloadingUpdate) {
+                    downloadingUpdate = true
+                    scope.launch {
+                        val result = onDownloadUpdate(url, info.apkName)
+                        downloadingUpdate = false
+                        result
+                            .onSuccess {
+                                updateInfo = null
+                                Toast.makeText(context, language.text("下载完成，请在系统安装页面确认。", "Download complete. Confirm installation in the system installer."), Toast.LENGTH_LONG).show()
+                            }
+                            .onFailure {
+                                updateError = it.message ?: language.text("更新下载失败，请稍后重试。", "Update download failed. Try again later.")
+                            }
+                    }
+                }
             }
         )
     }
@@ -628,6 +647,7 @@ private fun SettingList(
 private fun UpdateResultDialog(
     info: AppUpdateInfo,
     language: AppLanguage,
+    downloading: Boolean,
     onDismiss: () -> Unit,
     onOpenRelease: () -> Unit,
     onOpenApk: () -> Unit
@@ -657,7 +677,7 @@ private fun UpdateResultDialog(
                 }
                 if (info.hasUpdate && info.apkName != null) {
                     Text(
-                        language.text("将打开 GitHub 下载：${info.apkName}", "GitHub download: ${info.apkName}"),
+                        language.text("将在应用内后台下载：${info.apkName}", "In-app background download: ${info.apkName}"),
                         color = AppSubtext,
                         fontSize = 12.sp
                     )
@@ -666,8 +686,12 @@ private fun UpdateResultDialog(
         },
         confirmButton = {
             if (info.hasUpdate && info.apkDownloadUrl != null) {
-                TextButton(onClick = onOpenApk) {
-                    Text(language.text("下载 APK", "Download APK"), color = AppText, fontWeight = FontWeight.Black)
+                TextButton(onClick = onOpenApk, enabled = !downloading) {
+                    Text(
+                        if (downloading) language.text("下载中...", "Downloading...") else language.text("后台下载并安装", "Download and Install"),
+                        color = if (downloading) AppSubtext else AppText,
+                        fontWeight = FontWeight.Black
+                    )
                 }
             } else {
                 TextButton(onClick = onDismiss) {

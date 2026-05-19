@@ -8,6 +8,7 @@ import com.deadlinemate.deepseek.DeepSeekApiClient
 import com.deadlinemate.deepseek.DeepSeekTaskTextParser
 import com.deadlinemate.push.MiPushInitializer
 import com.deadlinemate.reminder.ReminderScheduler
+import com.deadlinemate.update.AppUpdateInstaller
 import com.deadlinemate.update.GithubUpdateChecker
 import okhttp3.OkHttpClient
 
@@ -20,6 +21,7 @@ class DeadlineMateApplication : Application() {
     val taskTextParser by lazy { DeepSeekTaskTextParser(deepSeekApiClient, apiKeyStore) }
     val reminderScheduler by lazy { ReminderScheduler(this) }
     val updateChecker by lazy { GithubUpdateChecker(httpClient) }
+    val updateInstaller by lazy { AppUpdateInstaller(this, httpClient) }
 
     override fun onCreate() {
         super.onCreate()

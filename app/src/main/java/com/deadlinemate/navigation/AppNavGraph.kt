@@ -212,6 +212,7 @@ fun DeadlineMateApp(vm: DeadlineMateViewModel) {
                     deepSeekStatus = deepSeekConfig.statusText(settings.speechLanguage),
                     onOpenDeepSeekSettings = { navController.navigate(Screen.DeepSeekSettings.route) },
                     onCheckUpdates = { vm.checkAppUpdate(com.deadlinemate.BuildConfig.VERSION_NAME) },
+                    onDownloadUpdate = vm::downloadAndInstallUpdate,
                     onOpenTestCenter = { navController.navigate(Screen.TestCenter.route) },
                     onEnableDeveloperMode = vm::enableDeveloperMode
                 )

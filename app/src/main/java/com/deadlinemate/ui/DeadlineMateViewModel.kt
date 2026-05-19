@@ -18,6 +18,7 @@ import com.deadlinemate.domain.model.TaskDraft
 import com.deadlinemate.domain.model.TaskStatus
 import com.deadlinemate.reminder.ReminderScheduler
 import com.deadlinemate.update.AppUpdateInfo
+import com.deadlinemate.update.AppUpdateInstaller
 import com.deadlinemate.update.GithubUpdateChecker
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -47,7 +48,8 @@ class DeadlineMateViewModel(
     private val deepSeekApiClient: DeepSeekApiClient,
     private val taskTextParser: TaskTextParser,
     private val reminderScheduler: ReminderScheduler,
-    private val updateChecker: GithubUpdateChecker
+    private val updateChecker: GithubUpdateChecker,
+    private val updateInstaller: AppUpdateInstaller
 ) : ViewModel() {
     val tasks: StateFlow<List<Task>> = repository.allTasks.stateIn(
         viewModelScope,
@@ -232,6 +234,10 @@ class DeadlineMateViewModel(
 
     suspend fun checkAppUpdate(currentVersion: String): Result<AppUpdateInfo> {
         return updateChecker.checkLatest(currentVersion)
+    }
+
+    suspend fun downloadAndInstallUpdate(apkUrl: String, apkName: String?): Result<Unit> {
+        return updateInstaller.downloadAndInstall(apkUrl, apkName)
     }
 
     private fun normalizeDeepSeekConfig(config: DeepSeekConfig?): DeepSeekConfig? {

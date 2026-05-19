@@ -38,6 +38,9 @@ fun buildDeepSeekTaskExtractionPrompt(text: String): String {
     8. repeatRule 只能是 NONE、DAILY、WEEKLY、MONTHLY、CUSTOM 或 null。用户明确说每天/每周/每月/重复时再填写；明确一次性任务填 NONE；不确定填 null。
     9. category 只能是 STUDY、HOMEWORK、COMPETITION、MEETING、LIFE、OTHER 或 null。
     10. confidence 是 0 到 1 的小数，表示你对整体提取结果的信心。
+    11. title 必须保留 OCR 原文里的完整任务名称，不要因为前后多张图片标题相似而省略课程名、项目名前缀、编号或后缀。
+    12. 如果原文是“计算机科学实验报告1 / 计算机科学实验报告2 / 计算机科学实验报告3”，title 必须分别返回完整的“计算机科学实验报告1”“计算机科学实验报告2”“计算机科学实验报告3”，不能返回“实验报告2”或“报告3”。
+    13. 当标题行里同时包含前缀和编号时，以完整标题行为准；不要把后续图片当成上一张图片的续写。
 
     当前本地时间：
     $nowText
@@ -171,7 +174,7 @@ class DeepSeekApiClient(
 
     private fun JSONObject.toTaskDraft(rawText: String): TaskDraft {
         return TaskDraft(
-            title = optStringOrNull("title"),
+            title = expandTitleFromRaw(optStringOrNull("title"), rawText),
             description = optStringOrNull("description"),
             deadlineDateTime = DeadlineTextInterpreter.parse(optStringOrNull("deadlineDateTimeText")),
             deadlineDateTimeText = optStringOrNull("deadlineDateTimeText"),
@@ -182,6 +185,38 @@ class DeepSeekApiClient(
             missingFields = optStringArray("missingFields"),
             rawText = rawText
         )
+    }
+
+    private fun expandTitleFromRaw(title: String?, rawText: String): String? {
+        val modelTitle = title?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        val normalizedTitle = normalizeTitle(modelTitle)
+        if (normalizedTitle.length < 2) return modelTitle
+        val lines = rawText
+            .lineSequence()
+            .map { cleanTitleCandidate(it) }
+            .filter { it.length in 3..48 }
+            .filterNot { line ->
+                listOf("截止", "时间", "提交", "提醒", "要求", "备注", "地点").any { line.contains(it) }
+            }
+            .toList()
+
+        return lines.firstOrNull { line ->
+            val normalizedLine = normalizeTitle(line)
+            normalizedLine != normalizedTitle &&
+                normalizedLine.contains(normalizedTitle) &&
+                normalizedLine.length <= normalizedTitle.length + 18
+        } ?: modelTitle
+    }
+
+    private fun cleanTitleCandidate(line: String): String {
+        return line.trim()
+            .replace(Regex("^(任务名称|任务|标题|题目|DDL|Deadline)\\s*[:：]\\s*"), "")
+            .trim(' ', '\t', ':', '：', '。', '.', '，', ',', ';', '；')
+    }
+
+    private fun normalizeTitle(value: String): String {
+        return value.lowercase()
+            .replace(Regex("[\\s\\p{Punct}，。；：、（）()【】\\[\\]《》\"“”'‘’]+"), "")
     }
 
     private inline fun <reified T : Enum<T>> String.toEnumOrNull(): T? {

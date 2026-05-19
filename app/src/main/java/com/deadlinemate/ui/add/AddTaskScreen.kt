@@ -77,6 +77,10 @@ import com.deadlinemate.ui.theme.AppRed
 import com.deadlinemate.ui.theme.AppSubtext
 import com.deadlinemate.ui.theme.AppText
 import com.deadlinemate.util.DateTimeUtils
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import java.util.Calendar
 
@@ -209,30 +213,25 @@ fun AddTaskScreen(
         screenshotDrafts = emptyList()
         selectedScreenshotDraftId = null
         screenshotFailedCount = 0
-        status = language.text("正在处理 ${uris.size} 张截图...", "Processing ${uris.size} screenshots...")
-        val parsedItems = mutableListOf<ScreenshotDraftItem>()
-        var failed = 0
-        uris.forEachIndexed { index, uri ->
-            status = language.text("正在识别第 ${index + 1}/${uris.size} 张截图...", "Recognizing screenshot ${index + 1}/${uris.size}...")
-            val textResult = runCatching { recognizeImageText(context, uri) }
-            val text = textResult.getOrNull().orEmpty()
-            if (textResult.isFailure || text.isBlank()) {
-                failed += 1
-                return@forEachIndexed
-            }
-            rawText = text
-            status = language.text("正在解析第 ${index + 1}/${uris.size} 张截图...", "Parsing screenshot ${index + 1}/${uris.size}...")
-            parseSmartText(text)
-                .onSuccess { draft ->
-                    parsedItems += ScreenshotDraftItem(
-                        id = System.nanoTime() + index,
-                        sourceIndex = index + 1,
-                        rawText = text,
-                        draft = draft.copy(rawText = text)
-                    )
+        status = language.text("正在并发识别 ${uris.size} 张截图...", "Recognizing ${uris.size} screenshots in parallel...")
+        val batchId = System.nanoTime()
+        val parsedItems = coroutineScope {
+            uris.mapIndexed { index, uri ->
+                async(Dispatchers.IO) {
+                    val text = runCatching { recognizeImageText(context, uri) }.getOrNull().orEmpty()
+                    if (text.isBlank()) return@async null
+                    parseSmartText(text).getOrNull()?.let { draft ->
+                        ScreenshotDraftItem(
+                            id = batchId + index,
+                            sourceIndex = index + 1,
+                            rawText = text,
+                            draft = draft.copy(rawText = text)
+                        )
+                    }
                 }
-                .onFailure { failed += 1 }
+            }.awaitAll().filterNotNull().sortedBy { it.sourceIndex }
         }
+        val failed = uris.size - parsedItems.size
         parsing = false
         screenshotFailedCount = failed
         if (parsedItems.isNotEmpty()) {
@@ -361,6 +360,7 @@ fun AddTaskScreen(
                 timePlaceholder = if (confirming && time.isBlank()) language.text("请选择截止时间", "Select deadline time") else language.text("选择时间", "Select time"),
                 language = language,
                 accent = accent,
+                compact = screenshotDrafts.isNotEmpty(),
                 onSave = {
                     val deadline = parseDeadline(date, time)
                     val reminderAt = reminder?.let { deadline - it * 60_000L }
@@ -458,31 +458,32 @@ private fun ManualPanel(
     timePlaceholder: String,
     language: AppLanguage,
     accent: Color,
+    compact: Boolean = false,
     onSave: () -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Field(language.text("任务名称", "Task Name")) { StyledField(title, onTitle, language.text("例如：提交课程设计报告", "Example: Submit course report")) }
+    Column(verticalArrangement = Arrangement.spacedBy(if (compact) 5.dp else 8.dp)) {
+        Field(language.text("任务名称", "Task Name"), compact = compact) { StyledField(title, onTitle, language.text("例如：提交课程设计报告", "Example: Submit course report")) }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            Field(language.text("截止日期", "Date"), Modifier.weight(1f)) { DateSelectBox(date, datePlaceholder, onDate) }
-            Field(language.text("截止时间", "Time"), Modifier.weight(1f)) { TimeSelectBox(time, timePlaceholder, onTime) }
+            Field(language.text("截止日期", "Date"), Modifier.weight(1f), compact = compact) { DateSelectBox(date, datePlaceholder, onDate) }
+            Field(language.text("截止时间", "Time"), Modifier.weight(1f), compact = compact) { TimeSelectBox(time, timePlaceholder, onTime) }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            Field(language.text("重要性", "Importance"), Modifier.weight(1f)) {
+            Field(language.text("重要性", "Importance"), Modifier.weight(1f), compact = compact) {
                 SelectBox(labelImportance(importance, language), listOf(language.text("高", "High") to ImportanceLevel.HIGH, language.text("中", "Medium") to ImportanceLevel.MEDIUM, language.text("低", "Low") to ImportanceLevel.LOW), onImportance)
             }
-            Field(language.text("提醒", "Reminder"), Modifier.weight(1f)) {
+            Field(language.text("提醒", "Reminder"), Modifier.weight(1f), compact = compact) {
                 SelectBox(labelReminder(reminder, language), listOf(language.text("提前 1 天", "1 day before") to 1440, language.text("提前 3 小时", "3 hours before") to 180, language.text("提前 30 分钟", "30 minutes before") to 30, language.text("不提醒", "Off") to null), onReminder)
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            Field(language.text("重复", "Repeat"), Modifier.weight(1f)) {
+            Field(language.text("重复", "Repeat"), Modifier.weight(1f), compact = compact) {
                 SelectBox(
                     labelRepeat(repeat, language),
                     listOf(language.text("不重复", "None") to RepeatRule.NONE, language.text("每天", "Daily") to RepeatRule.DAILY, language.text("每周", "Weekly") to RepeatRule.WEEKLY, language.text("每月", "Monthly") to RepeatRule.MONTHLY, language.text("自定义", "Custom") to RepeatRule.CUSTOM),
                     onRepeat
                 )
             }
-            Field(language.text("任务类型", "Category"), Modifier.weight(1f)) {
+            Field(language.text("任务类型", "Category"), Modifier.weight(1f), compact = compact) {
                 SelectBox(
                     labelCategory(category, language),
                     listOf(language.text("其他", "Other") to TaskCategory.OTHER, language.text("学习", "Study") to TaskCategory.STUDY, language.text("作业", "Homework") to TaskCategory.HOMEWORK, language.text("比赛", "Competition") to TaskCategory.COMPETITION, language.text("会议", "Meeting") to TaskCategory.MEETING, language.text("生活", "Life") to TaskCategory.LIFE),
@@ -490,11 +491,11 @@ private fun ManualPanel(
                 )
             }
         }
-        Field(language.text("备注", "Notes")) { StyledField(desc, onDesc, language.text("补充提交方式、注意事项等", "Submission method, requirements, or notes"), minLines = 2) }
+        Field(language.text("备注", "Notes"), compact = compact) { StyledField(desc, onDesc, language.text("补充提交方式、注意事项等", "Submission method, requirements, or notes"), minLines = 2) }
         TextButton(
             onClick = onSave,
             enabled = title.isNotBlank() && date.isNotBlank(),
-            modifier = Modifier.fillMaxWidth().height(46.dp).background(accent, RoundedCornerShape(16.dp)),
+            modifier = Modifier.fillMaxWidth().height(if (compact) 42.dp else 46.dp).background(accent, RoundedCornerShape(16.dp)),
             colors = ButtonDefaults.textButtonColors(contentColor = Color.White, disabledContentColor = Color.White.copy(alpha = 0.55f))
         ) {
             Text(saveText, fontSize = 15.sp, fontWeight = FontWeight.Black)
@@ -745,7 +746,7 @@ private fun ScreenshotDraftCards(
     accent: Color,
     onSelect: (ScreenshotDraftItem) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -766,31 +767,31 @@ private fun ScreenshotDraftCards(
             modifier = Modifier
                 .fillMaxWidth()
                 .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             drafts.forEach { item ->
                 val selected = item.id == selectedId
                 val draft = item.draft
                 Column(
                     modifier = Modifier
-                        .size(width = 164.dp, height = 92.dp)
-                        .background(Color.White.copy(alpha = if (selected) 0.94f else 0.72f), RoundedCornerShape(18.dp))
-                        .border(1.dp, if (selected) accent else AppLine, RoundedCornerShape(18.dp))
+                        .size(width = 148.dp, height = 76.dp)
+                        .background(Color.White.copy(alpha = if (selected) 0.94f else 0.72f), RoundedCornerShape(16.dp))
+                        .border(1.dp, if (selected) accent else AppLine, RoundedCornerShape(16.dp))
                         .clickable { onSelect(item) }
-                        .padding(12.dp),
+                        .padding(10.dp),
                     verticalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
                         language.text("第 ${item.sourceIndex} 张截图", "Image ${item.sourceIndex}"),
                         color = if (selected) accent else AppSubtext,
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.Black
                     )
                     Text(
                         draft.title?.takeIf { it.isNotBlank() } ?: language.text("待补充标题", "Title needed"),
                         color = AppText,
-                        fontSize = 13.sp,
-                        lineHeight = 16.sp,
+                        fontSize = 12.sp,
+                        lineHeight = 14.sp,
                         fontWeight = FontWeight.Black,
                         maxLines = 2
                     )
@@ -843,9 +844,15 @@ private fun RecoveryButton(text: String, modifier: Modifier, enabled: Boolean, o
 }
 
 @Composable
-private fun Field(label: String, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+private fun Field(label: String, modifier: Modifier = Modifier, compact: Boolean = false, content: @Composable () -> Unit) {
     Column(modifier = modifier) {
-        Text(label, color = AppSubtext, fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.padding(start = 2.dp, bottom = 4.dp))
+        Text(
+            label,
+            color = AppSubtext,
+            fontSize = if (compact) 10.sp else 11.sp,
+            fontWeight = FontWeight.ExtraBold,
+            modifier = Modifier.padding(start = 2.dp, bottom = if (compact) 2.dp else 4.dp)
+        )
         content()
     }
 }
@@ -855,11 +862,11 @@ private fun StyledField(value: String, onValue: (String) -> Unit, placeholder: S
     OutlinedTextField(
         value = value,
         onValueChange = onValue,
-        placeholder = { Text(placeholder, color = AppSubtext, fontSize = 15.sp, lineHeight = 20.sp) },
-        modifier = Modifier.fillMaxWidth().height(if (minLines > 1) 82.dp else 58.dp),
+        placeholder = { Text(placeholder, color = AppSubtext, fontSize = 13.sp, lineHeight = 17.sp) },
+        modifier = Modifier.fillMaxWidth().height(if (minLines > 1) 64.dp else 50.dp),
         minLines = minLines,
         singleLine = minLines == 1,
-        textStyle = TextStyle(fontSize = 15.sp, lineHeight = 20.sp),
+        textStyle = TextStyle(fontSize = 13.sp, lineHeight = 17.sp),
         shape = RoundedCornerShape(15.dp),
         colors = fieldColors()
     )
@@ -870,14 +877,14 @@ private fun ChoiceBox(text: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(50.dp)
+            .height(44.dp)
             .background(Color.White.copy(alpha = 0.78f), RoundedCornerShape(15.dp))
             .border(1.dp, AppLine, RoundedCornerShape(15.dp))
             .clickable { onClick() }
             .padding(horizontal = 12.dp),
         contentAlignment = Alignment.CenterStart
     ) {
-        Text(text, color = AppText, fontSize = 13.sp, maxLines = 1)
+        Text(text, color = AppText, fontSize = 12.sp, maxLines = 1)
     }
 }
 

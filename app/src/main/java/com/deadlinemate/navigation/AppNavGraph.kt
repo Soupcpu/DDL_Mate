@@ -170,12 +170,14 @@ fun DeadlineMateApp(vm: DeadlineMateViewModel) {
                     pageBg = pageBg,
                     onGoConfigure = { navController.navigate(Screen.DeepSeekSettings.route) },
                     parseSmartText = vm::parseTaskText,
-                    onSave = { title, desc, deadline, importance, category, repeat, reminder ->
+                    onSave = { title, desc, deadline, importance, category, repeat, reminder, finishAfterSave ->
                         val saveAction = {
                             vm.addTask(title, desc, deadline, importance, category, repeat, reminder)
-                            navController.navigate(Screen.Home.route) {
-                                popUpTo(Screen.Home.route) { inclusive = false }
-                                launchSingleTop = true
+                            if (finishAfterSave) {
+                                navController.navigate(Screen.Home.route) {
+                                    popUpTo(Screen.Home.route) { inclusive = false }
+                                    launchSingleTop = true
+                                }
                             }
                         }
                         if (reminder != null && settings.notificationEnabled) {

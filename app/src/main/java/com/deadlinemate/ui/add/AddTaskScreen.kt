@@ -13,6 +13,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
@@ -82,6 +84,13 @@ private enum class AddMode(val title: String, val icon: String, val sub: String)
 
 private enum class EnhancedSource { Voice, Screenshot }
 
+private data class ScreenshotDraftItem(
+    val id: Long,
+    val sourceIndex: Int,
+    val rawText: String,
+    val draft: TaskDraft
+)
+
 @Composable
 fun AddTaskScreen(
     settings: UiSettings,
@@ -89,7 +98,7 @@ fun AddTaskScreen(
     pageBg: Color = AppBg,
     onGoConfigure: () -> Unit,
     parseSmartText: suspend (String) -> Result<TaskDraft>,
-    onSave: (String, String?, Long, ImportanceLevel, TaskCategory, RepeatRule, Int?) -> Unit
+    onSave: (String, String?, Long, ImportanceLevel, TaskCategory, RepeatRule, Int?, Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val language = LocalAppLanguage.current
@@ -111,13 +120,19 @@ fun AddTaskScreen(
     var parsing by remember { mutableStateOf(false) }
     var failedSource by remember { mutableStateOf<EnhancedSource?>(null) }
     var showConfigDialog by remember { mutableStateOf(false) }
+    var screenshotDrafts by remember { mutableStateOf<List<ScreenshotDraftItem>>(emptyList()) }
+    var selectedScreenshotDraftId by remember { mutableStateOf<Long?>(null) }
+    var screenshotFailedCount by remember { mutableStateOf(0) }
 
-    fun applyDraft(draft: TaskDraft) {
+    fun loadDraft(draft: TaskDraft, sourceText: String? = null) {
         title = draft.title.orEmpty()
         desc = draft.description ?: draft.rawText.orEmpty()
-        draft.deadlineDateTime?.let {
-            date = DateTimeUtils.formatInputDate(it)
-            time = DateTimeUtils.formatTime(it)
+        if (draft.deadlineDateTime != null) {
+            date = DateTimeUtils.formatInputDate(draft.deadlineDateTime)
+            time = DateTimeUtils.formatTime(draft.deadlineDateTime)
+        } else {
+            date = ""
+            time = ""
         }
         importance = draft.importance ?: ImportanceLevel.MEDIUM
         category = draft.category ?: TaskCategory.OTHER
@@ -125,7 +140,42 @@ fun AddTaskScreen(
         confirming = true
         mode = AddMode.Manual
         status = language.text("请确认任务信息后再保存。", "Review the task details before saving.")
+        rawText = sourceText ?: draft.rawText.orEmpty()
         failedSource = null
+    }
+
+    fun currentFormDraft(raw: String?): TaskDraft {
+        return TaskDraft(
+            title = title.takeIf { it.isNotBlank() },
+            description = desc.takeIf { it.isNotBlank() },
+            deadlineDateTime = date.takeIf { it.isNotBlank() }?.let { parseDeadline(date, time) },
+            importance = importance,
+            repeatRule = repeat,
+            category = category,
+            rawText = raw
+        )
+    }
+
+    fun persistSelectedScreenshotDraft() {
+        val selectedId = selectedScreenshotDraftId ?: return
+        screenshotDrafts = screenshotDrafts.map { item ->
+            if (item.id == selectedId) item.copy(draft = currentFormDraft(item.rawText)) else item
+        }
+    }
+
+    fun selectScreenshotDraft(item: ScreenshotDraftItem) {
+        persistSelectedScreenshotDraft()
+        selectedScreenshotDraftId = item.id
+        loadDraft(item.draft, item.rawText)
+        status = language.text("正在查看第 ${item.sourceIndex} 张截图提取结果，请确认后保存。", "Review screenshot ${item.sourceIndex}, then save.")
+    }
+
+    fun applyDraft(draft: TaskDraft) {
+        loadDraft(draft)
+        screenshotDrafts = emptyList()
+        selectedScreenshotDraftId = null
+        screenshotFailedCount = 0
+        status = language.text("请确认任务信息后再保存。", "Review the task details before saving.")
     }
 
     fun parseText(text: String, source: EnhancedSource) {
@@ -149,19 +199,56 @@ fun AddTaskScreen(
         }
     }
 
-    lateinit var photoPicker: androidx.activity.result.ActivityResultLauncher<PickVisualMediaRequest>
-    photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri: Uri? ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            parsing = true
-            status = language.text("正在本地识别截图文字...", "Recognizing screenshot text locally...")
-            runCatching { recognizeImageText(context, uri) }
-                .onSuccess { parseText(it, EnhancedSource.Screenshot) }
-                .onFailure {
-                    parsing = false
-                    failedSource = EnhancedSource.Screenshot
-                    status = language.text("截图识别失败，请重新选择图片或改用手动填写。", "Screenshot recognition failed. Pick another image or fill manually.")
+    suspend fun processScreenshotUris(uris: List<Uri>) {
+        parsing = true
+        failedSource = null
+        screenshotDrafts = emptyList()
+        selectedScreenshotDraftId = null
+        screenshotFailedCount = 0
+        status = language.text("正在处理 ${uris.size} 张截图...", "Processing ${uris.size} screenshots...")
+        val parsedItems = mutableListOf<ScreenshotDraftItem>()
+        var failed = 0
+        uris.forEachIndexed { index, uri ->
+            status = language.text("正在识别第 ${index + 1}/${uris.size} 张截图...", "Recognizing screenshot ${index + 1}/${uris.size}...")
+            val textResult = runCatching { recognizeImageText(context, uri) }
+            val text = textResult.getOrNull().orEmpty()
+            if (textResult.isFailure || text.isBlank()) {
+                failed += 1
+                return@forEachIndexed
+            }
+            rawText = text
+            status = language.text("正在解析第 ${index + 1}/${uris.size} 张截图...", "Parsing screenshot ${index + 1}/${uris.size}...")
+            parseSmartText(text)
+                .onSuccess { draft ->
+                    parsedItems += ScreenshotDraftItem(
+                        id = System.nanoTime() + index,
+                        sourceIndex = index + 1,
+                        rawText = text,
+                        draft = draft.copy(rawText = text)
+                    )
                 }
+                .onFailure { failed += 1 }
+        }
+        parsing = false
+        screenshotFailedCount = failed
+        if (parsedItems.isNotEmpty()) {
+            screenshotDrafts = parsedItems
+            selectScreenshotDraft(parsedItems.first())
+            status = language.text(
+                "已生成 ${parsedItems.size} 个任务草稿${if (failed > 0) "，${failed} 张未成功" else ""}。请逐个确认。",
+                "Generated ${parsedItems.size} drafts${if (failed > 0) ", $failed failed" else ""}. Review them one by one."
+            )
+        } else {
+            failedSource = EnhancedSource.Screenshot
+            status = language.text("截图识别或智能解析失败，请重新选择图片或改用手动填写。", "Screenshot recognition or smart parsing failed. Pick images again or fill manually.")
+        }
+    }
+
+    lateinit var photoPicker: androidx.activity.result.ActivityResultLauncher<PickVisualMediaRequest>
+    photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris: List<Uri> ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            processScreenshotUris(uris)
         }
     }
 
@@ -237,6 +324,16 @@ fun AddTaskScreen(
                 }
             )
         }
+        if (screenshotDrafts.isNotEmpty()) {
+            ScreenshotDraftCards(
+                drafts = screenshotDrafts,
+                selectedId = selectedScreenshotDraftId,
+                failedCount = screenshotFailedCount,
+                language = language,
+                accent = accent,
+                onSelect = ::selectScreenshotDraft
+            )
+        }
         when {
             confirming || mode == AddMode.Manual -> ManualPanel(
                 title = title,
@@ -266,7 +363,19 @@ fun AddTaskScreen(
                     if (reminderAt != null && reminderAt <= System.currentTimeMillis()) {
                         status = language.text("提醒时间已经过去，请调整截止时间或提醒时间。", "The reminder time has already passed. Adjust the deadline or reminder.")
                     } else {
-                        onSave(title.trim(), desc.trim().ifBlank { null }, deadline, importance, category, repeat, reminder)
+                        val selectedBatchId = selectedScreenshotDraftId
+                        if (selectedBatchId != null) {
+                            val remaining = screenshotDrafts.filterNot { it.id == selectedBatchId }
+                            onSave(title.trim(), desc.trim().ifBlank { null }, deadline, importance, category, repeat, reminder, remaining.isEmpty())
+                            if (remaining.isNotEmpty()) {
+                                screenshotDrafts = remaining
+                                selectedScreenshotDraftId = null
+                                selectScreenshotDraft(remaining.first())
+                                status = language.text("已保存 1 个任务，继续确认剩余 ${remaining.size} 个。", "Saved 1 task. Continue reviewing ${remaining.size} remaining.")
+                            }
+                        } else {
+                            onSave(title.trim(), desc.trim().ifBlank { null }, deadline, importance, category, repeat, reminder, true)
+                        }
                     }
                 }
             )
@@ -506,6 +615,77 @@ private fun ScreenshotPanel(parsing: Boolean, language: AppLanguage, accent: Col
                 .padding(horizontal = 20.dp, vertical = 13.dp)
         ) {
             Text(if (parsing) language.text("处理中...", "Processing...") else language.text("打开相册", "Open Gallery"), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Black)
+        }
+    }
+}
+
+@Composable
+private fun ScreenshotDraftCards(
+    drafts: List<ScreenshotDraftItem>,
+    selectedId: Long?,
+    failedCount: Int,
+    language: AppLanguage,
+    accent: Color,
+    onSelect: (ScreenshotDraftItem) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(language.text("截图草稿", "Screenshot Drafts"), color = AppText, fontSize = 14.sp, fontWeight = FontWeight.Black)
+            Text(
+                language.text(
+                    "${drafts.size} 个可确认${if (failedCount > 0) " · ${failedCount} 个失败" else ""}",
+                    "${drafts.size} ready${if (failedCount > 0) " · $failedCount failed" else ""}"
+                ),
+                color = AppSubtext,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            drafts.forEach { item ->
+                val selected = item.id == selectedId
+                val draft = item.draft
+                Column(
+                    modifier = Modifier
+                        .size(width = 164.dp, height = 92.dp)
+                        .background(Color.White.copy(alpha = if (selected) 0.94f else 0.72f), RoundedCornerShape(18.dp))
+                        .border(1.dp, if (selected) accent else AppLine, RoundedCornerShape(18.dp))
+                        .clickable { onSelect(item) }
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        language.text("第 ${item.sourceIndex} 张截图", "Image ${item.sourceIndex}"),
+                        color = if (selected) accent else AppSubtext,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                    Text(
+                        draft.title?.takeIf { it.isNotBlank() } ?: language.text("待补充标题", "Title needed"),
+                        color = AppText,
+                        fontSize = 13.sp,
+                        lineHeight = 16.sp,
+                        fontWeight = FontWeight.Black,
+                        maxLines = 2
+                    )
+                    Text(
+                        draft.deadlineDateTime?.let { DateTimeUtils.formatDateTime(it) }
+                            ?: language.text("缺少截止时间", "Missing deadline"),
+                        color = AppSubtext,
+                        fontSize = 10.sp,
+                        maxLines = 1
+                    )
+                }
+            }
         }
     }
 }

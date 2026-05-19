@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas as AndroidCanvas
 import android.graphics.Rect
+import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -43,6 +44,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -77,6 +79,7 @@ import com.deadlinemate.ui.theme.AppGreen
 import com.deadlinemate.ui.theme.AppLine
 import com.deadlinemate.ui.theme.AppSubtext
 import com.deadlinemate.ui.theme.AppText
+import com.deadlinemate.update.AppUpdateInfo
 import com.deadlinemate.util.DateTimeUtils
 import java.io.File
 import java.io.FileOutputStream
@@ -85,6 +88,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 @Composable
 fun ProfileScreen(
@@ -100,6 +104,7 @@ fun ProfileScreen(
     onSetAvatarPath: (String?) -> Unit,
     deepSeekStatus: String,
     onOpenDeepSeekSettings: () -> Unit,
+    onCheckUpdates: suspend () -> Result<AppUpdateInfo>,
     onOpenTestCenter: () -> Unit,
     onEnableDeveloperMode: () -> Unit
 ) {
@@ -149,6 +154,7 @@ fun ProfileScreen(
                 onSetTheme = onSetTheme,
                 deepSeekStatus = deepSeekStatus,
                 onOpenDeepSeekSettings = onOpenDeepSeekSettings,
+                onCheckUpdates = onCheckUpdates,
                 versionName = BuildConfig.VERSION_NAME,
                 onOpenTestCenter = onOpenTestCenter,
                 onDeveloperUnlocked = {
@@ -487,14 +493,20 @@ private fun SettingList(
     onSetTheme: (String) -> Unit,
     deepSeekStatus: String,
     onOpenDeepSeekSettings: () -> Unit,
+    onCheckUpdates: suspend () -> Result<AppUpdateInfo>,
     versionName: String,
     onOpenTestCenter: () -> Unit,
     onDeveloperUnlocked: () -> Unit
 ) {
+    val language = LocalAppLanguage.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var expandedGroup by remember { mutableStateOf<String?>(null) }
+    var checkingUpdate by remember { mutableStateOf(false) }
+    var updateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
+    var updateError by remember { mutableStateOf<String?>(null) }
+
     GlassPanel(modifier = Modifier.fillMaxWidth(), radius = 28.dp) {
-        val language = LocalAppLanguage.current
-        val context = LocalContext.current
-        var expandedGroup by remember { mutableStateOf<String?>(null) }
         Column {
             if (settings.developerModeEnabled && settings.showDeveloperEntry) {
                 Setting(language.text("测试中心", "Test Center"), language.text("进入 ›", "Open ›"), onOpenTestCenter)
@@ -558,17 +570,130 @@ private fun SettingList(
                 expanded = expandedGroup == "about",
                 onClick = { expandedGroup = if (expandedGroup == "about") null else "about" }
             ) {
-                Setting(language.text("版本更新", "App Updates"), language.text("检查更新 ›", "Check ›")) {
-                    Toast.makeText(
-                        context,
-                        language.text("版本更新功能已预留，后续会接入自动查询。", "Update check is reserved for a future release."),
-                        Toast.LENGTH_SHORT
-                    ).show()
+                Setting(
+                    language.text("版本更新", "App Updates"),
+                    if (checkingUpdate) language.text("检查中...", "Checking...") else language.text("检查更新 ›", "Check ›")
+                ) {
+                    if (!checkingUpdate) {
+                        checkingUpdate = true
+                        scope.launch {
+                            val result = onCheckUpdates()
+                            checkingUpdate = false
+                            result
+                                .onSuccess { updateInfo = it }
+                                .onFailure { updateError = it.message ?: language.text("检查更新失败，请稍后重试。", "Failed to check for updates.") }
+                        }
+                    }
                 }
                 Divider()
                 VersionSetting(versionName = versionName, onDeveloperUnlocked = onDeveloperUnlocked)
             }
         }
+    }
+
+    updateInfo?.let { info ->
+        UpdateResultDialog(
+            info = info,
+            language = language,
+            onDismiss = { updateInfo = null },
+            onOpenRelease = {
+                updateInfo = null
+                openUrl(context, info.releaseUrl)
+            },
+            onOpenApk = {
+                updateInfo = null
+                info.apkDownloadUrl?.let { openUrl(context, it) }
+            }
+        )
+    }
+
+    updateError?.let { message ->
+        AlertDialog(
+            onDismissRequest = { updateError = null },
+            title = { Text(language.text("检查更新失败", "Update Check Failed"), color = AppText, fontWeight = FontWeight.Black) },
+            text = { Text(message, color = AppSubtext, fontSize = 13.sp) },
+            confirmButton = {
+                TextButton(onClick = { updateError = null }) {
+                    Text(language.text("知道了", "OK"), color = AppText, fontWeight = FontWeight.Bold)
+                }
+            },
+            containerColor = Color.White,
+            shape = RoundedCornerShape(26.dp),
+            tonalElevation = 0.dp
+        )
+    }
+}
+
+@Composable
+private fun UpdateResultDialog(
+    info: AppUpdateInfo,
+    language: AppLanguage,
+    onDismiss: () -> Unit,
+    onOpenRelease: () -> Unit,
+    onOpenApk: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                if (info.hasUpdate) language.text("发现新版本", "Update Available") else language.text("已是最新版本", "Up to Date"),
+                color = AppText,
+                fontWeight = FontWeight.Black
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    language.text(
+                        "当前版本：${info.currentVersion}\n最新版本：${info.latestVersion}",
+                        "Current: ${info.currentVersion}\nLatest: ${info.latestVersion}"
+                    ),
+                    color = AppText,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                if (info.releaseNotes.isNotBlank()) {
+                    Text(info.releaseNotes, color = AppSubtext, fontSize = 12.sp, lineHeight = 17.sp)
+                }
+                if (info.hasUpdate && info.apkName != null) {
+                    Text(
+                        language.text("将打开 GitHub 下载：${info.apkName}", "GitHub download: ${info.apkName}"),
+                        color = AppSubtext,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (info.hasUpdate && info.apkDownloadUrl != null) {
+                TextButton(onClick = onOpenApk) {
+                    Text(language.text("下载 APK", "Download APK"), color = AppText, fontWeight = FontWeight.Black)
+                }
+            } else {
+                TextButton(onClick = onDismiss) {
+                    Text(language.text("知道了", "OK"), color = AppText, fontWeight = FontWeight.Black)
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = if (info.releaseUrl.isNotBlank()) onOpenRelease else onDismiss) {
+                Text(
+                    if (info.releaseUrl.isNotBlank()) language.text("查看发布页", "View Release") else language.text("关闭", "Close"),
+                    color = AppSubtext,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        containerColor = Color.White,
+        shape = RoundedCornerShape(26.dp),
+        tonalElevation = 0.dp
+    )
+}
+
+private fun openUrl(context: Context, url: String) {
+    if (url.isBlank()) return
+    runCatching {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 }
 

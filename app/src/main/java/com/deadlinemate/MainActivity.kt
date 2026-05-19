@@ -24,7 +24,8 @@ class MainActivity : ComponentActivity() {
                         app.apiKeyStore,
                         app.deepSeekApiClient,
                         app.taskTextParser,
-                        app.reminderScheduler
+                        app.reminderScheduler,
+                        app.updateChecker
                     ) as T
                 }
             }

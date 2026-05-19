@@ -11,8 +11,8 @@ android {
         applicationId "com.deadlinemate"
         minSdk 26
         targetSdk 35
-        versionCode 4
-        versionName "1.0.3"
+        versionCode 5
+        versionName "1.0.31"
         buildConfigField "String", "MIPUSH_APP_ID", "\"${project.findProperty("mipushAppId") ?: ""}\""
         buildConfigField "String", "MIPUSH_APP_KEY", "\"${project.findProperty("mipushAppKey") ?: ""}\""
     }

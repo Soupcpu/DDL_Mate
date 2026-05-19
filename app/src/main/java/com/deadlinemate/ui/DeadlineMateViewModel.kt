@@ -19,6 +19,7 @@ import com.deadlinemate.domain.model.TaskStatus
 import com.deadlinemate.reminder.ReminderScheduler
 import com.deadlinemate.update.AppUpdateInfo
 import com.deadlinemate.update.AppUpdateInstaller
+import com.deadlinemate.update.UpdateDownloadState
 import com.deadlinemate.update.GithubUpdateChecker
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -60,6 +61,7 @@ class DeadlineMateViewModel(
     val uiSettings: StateFlow<UiSettings> = _uiSettings.asStateFlow()
     private val _deepSeekConfig = MutableStateFlow(normalizeDeepSeekConfig(apiKeyStore.getDeepSeekConfig()))
     val deepSeekConfig: StateFlow<DeepSeekConfig?> = _deepSeekConfig.asStateFlow()
+    val updateDownloadState: StateFlow<UpdateDownloadState> = updateInstaller.downloadState
 
     init {
         cleanupGeneratedDemoTasksOnce()
@@ -236,7 +238,7 @@ class DeadlineMateViewModel(
         return updateChecker.checkLatest(currentVersion)
     }
 
-    suspend fun downloadAndInstallUpdate(apkUrl: String, apkName: String?): Result<Unit> {
+    fun downloadAndInstallUpdate(apkUrl: String, apkName: String?): Result<Unit> {
         return updateInstaller.downloadAndInstall(apkUrl, apkName)
     }
 

@@ -104,6 +104,7 @@ fun DeadlineMateApp(vm: DeadlineMateViewModel) {
     val tasks by vm.tasks.collectAsStateWithLifecycle()
     val settings by vm.uiSettings.collectAsStateWithLifecycle()
     val deepSeekConfig by vm.deepSeekConfig.collectAsStateWithLifecycle()
+    val updateDownloadState by vm.updateDownloadState.collectAsStateWithLifecycle()
     val language = appLanguage(settings.speechLanguage)
     val visualThemeStyle = resolveThemeStyle(settings.themeStyle, isSystemInDarkTheme())
     val pageBg = themeBackground(visualThemeStyle)
@@ -219,6 +220,7 @@ fun DeadlineMateApp(vm: DeadlineMateViewModel) {
                     onOpenDeepSeekSettings = { navController.navigate(Screen.DeepSeekSettings.route) },
                     onCheckUpdates = { vm.checkAppUpdate(com.deadlinemate.BuildConfig.VERSION_NAME) },
                     onDownloadUpdate = vm::downloadAndInstallUpdate,
+                    updateDownloadState = updateDownloadState,
                     onOpenTestCenter = { navController.navigate(Screen.TestCenter.route) },
                     onEnableDeveloperMode = vm::enableDeveloperMode
                 )

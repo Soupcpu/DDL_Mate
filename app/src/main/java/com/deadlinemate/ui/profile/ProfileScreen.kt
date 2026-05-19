@@ -45,6 +45,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MenuDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -94,6 +95,7 @@ import com.deadlinemate.ui.theme.AppLine
 import com.deadlinemate.ui.theme.AppSubtext
 import com.deadlinemate.ui.theme.AppText
 import com.deadlinemate.update.AppUpdateInfo
+import com.deadlinemate.update.UpdateDownloadState
 import com.deadlinemate.util.DateTimeUtils
 import java.io.File
 import java.io.FileOutputStream
@@ -120,7 +122,8 @@ fun ProfileScreen(
     deepSeekStatus: String,
     onOpenDeepSeekSettings: () -> Unit,
     onCheckUpdates: suspend () -> Result<AppUpdateInfo>,
-    onDownloadUpdate: suspend (String, String?) -> Result<Unit>,
+    onDownloadUpdate: (String, String?) -> Result<Unit>,
+    updateDownloadState: UpdateDownloadState,
     onOpenTestCenter: () -> Unit,
     onEnableDeveloperMode: () -> Unit
 ) {
@@ -172,6 +175,7 @@ fun ProfileScreen(
                 onOpenDeepSeekSettings = onOpenDeepSeekSettings,
                 onCheckUpdates = onCheckUpdates,
                 onDownloadUpdate = onDownloadUpdate,
+                updateDownloadState = updateDownloadState,
                 versionName = BuildConfig.VERSION_NAME,
                 onOpenTestCenter = onOpenTestCenter,
                 onDeveloperUnlocked = {
@@ -522,7 +526,8 @@ private fun SettingList(
     deepSeekStatus: String,
     onOpenDeepSeekSettings: () -> Unit,
     onCheckUpdates: suspend () -> Result<AppUpdateInfo>,
-    onDownloadUpdate: suspend (String, String?) -> Result<Unit>,
+    onDownloadUpdate: (String, String?) -> Result<Unit>,
+    updateDownloadState: UpdateDownloadState,
     versionName: String,
     onOpenTestCenter: () -> Unit,
     onDeveloperUnlocked: () -> Unit
@@ -532,7 +537,6 @@ private fun SettingList(
     val scope = rememberCoroutineScope()
     var expandedGroup by remember { mutableStateOf<String?>(null) }
     var checkingUpdate by remember { mutableStateOf(false) }
-    var downloadingUpdate by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
     var updateError by remember { mutableStateOf<String?>(null) }
 
@@ -625,7 +629,7 @@ private fun SettingList(
         UpdateResultDialog(
             info = info,
             language = language,
-            downloading = downloadingUpdate,
+            downloadState = updateDownloadState,
             onDismiss = { updateInfo = null },
             onOpenRelease = {
                 updateInfo = null
@@ -633,6 +637,11 @@ private fun SettingList(
             },
             onOpenApk = {
                 val url = info.apkDownloadUrl ?: return@UpdateResultDialog
+                onDownloadUpdate(url, info.apkName).onFailure {
+                    updateError = it.message ?: language.text("更新下载失败，请稍后重试。", "Update download failed. Try again later.")
+                }
+                return@UpdateResultDialog
+                var downloadingUpdate = false
                 if (!downloadingUpdate) {
                     downloadingUpdate = true
                     scope.launch {
@@ -673,7 +682,7 @@ private fun SettingList(
 private fun UpdateResultDialog(
     info: AppUpdateInfo,
     language: AppLanguage,
-    downloading: Boolean,
+    downloadState: UpdateDownloadState,
     onDismiss: () -> Unit,
     onOpenRelease: () -> Unit,
     onOpenApk: () -> Unit
@@ -689,6 +698,16 @@ private fun UpdateResultDialog(
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (downloadState.running) {
+                    val progress = downloadState.progress
+                    LinearProgressIndicator(
+                        progress = { progress ?: 0f },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = AppBlue,
+                        trackColor = AppLine
+                    )
+                    Text(progress?.let { "${(it * 100).toInt().coerceIn(0, 100)}%" } ?: language.text("正在连接下载...", "Connecting..."), color = AppSubtext, fontSize = 12.sp)
+                }
                 Text(
                     language.text(
                         "当前版本：${info.currentVersion}\n最新版本：${info.latestVersion}",
@@ -712,10 +731,10 @@ private fun UpdateResultDialog(
         },
         confirmButton = {
             if (info.hasUpdate && info.apkDownloadUrl != null) {
-                TextButton(onClick = onOpenApk, enabled = !downloading) {
+                TextButton(onClick = onOpenApk, enabled = !downloadState.running) {
                     Text(
-                        if (downloading) language.text("下载中...", "Downloading...") else language.text("后台下载并安装", "Download and Install"),
-                        color = if (downloading) AppSubtext else AppText,
+                        if (downloadState.running) language.text("下载中...", "Downloading...") else language.text("后台下载并安装", "Download and Install"),
+                        color = if (downloadState.running) AppSubtext else AppText,
                         fontWeight = FontWeight.Black
                     )
                 }
